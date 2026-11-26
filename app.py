@@ -129,9 +129,9 @@ def process_leaf_area(img_bytes: bytes, image_name: str, l: int, r: int, dt: int
     cv2.line(canvas, (x2, 0), (x2, h), (255, 255, 255), 2)
 
     # 葉面積率の計算 (%)
-    # 分母を画像全体のピクセル数 (h * w) に固定することで、囲み方の違いによる変動を防ぐ
+    # 分母を左右幅で区切られた解析空間のピクセル数 (leaf_mask.size = h * (x2 - x1)) に設定
     pixel_count = cv2.countNonZero(leaf_mask)
-    total_pixels = h * w
+    total_pixels = leaf_mask.size
     leaf_pct = (pixel_count / total_pixels) * 100
 
     res_img = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
@@ -159,7 +159,7 @@ def build_csv_bytes(result_data: dict) -> bytes:
     writer = csv.writer(buf)
     writer.writerow([
         "解析日時", "画像ファイル名", "葉面積率(%)",
-        "抽出ピクセル数(px)", "画像全体総ピクセル数(px)",
+        "抽出ピクセル数(px)", "解析範囲総ピクセル数(px)",
         "解析横幅範囲", "深度しきい値", "HSVフィルタ範囲",
     ])
     writer.writerow([
@@ -179,8 +179,7 @@ def build_csv_bytes(result_data: dict) -> bytes:
 # ==========================================
 st.title("🥒 キュウリ葉面積率算出アプリ")
 st.caption(
-    "上下を画像全体（0%〜100%）に固定し、画像全体に対する葉の占有率を算出することで、測定者によるばらつきを抑えます。"
-    "左右の不要な株・背景がある場合は横幅のみ調整してください。"
+    "上下を画像全体（0%〜100%）に固定し、横幅のみを調整して解析範囲内の葉面積率を算出します。"
 )
 
 col_in, col_out = st.columns([2, 3], gap="large")
@@ -277,7 +276,7 @@ with col_out:
                 葉面積率: <span style="color: #2e8b57; font-size: 2.8rem;">{d['leaf_area_pct']:.2f}</span> <span style="font-size: 1.6rem;">%</span>
             </div>
             <div style="font-size: 1.05rem; color: #555;">
-                抽出ピクセル数: <b>{d['extracted_pixels']:,}</b> / {d['total_pixels']:,} px（画像全体基準）
+                抽出ピクセル数: <b>{d['extracted_pixels']:,}</b> / {d['total_pixels']:,} px（解析範囲内）
             </div>
             <div style="font-size: 0.9rem; color: #666; margin-top: 6px;">
                 解析横幅: {d['l']}% 〜 {d['r']}%（上下 0%〜100% 固定）

@@ -37,7 +37,6 @@ class AppConfig:
 
     SAMPLE_IMAGES = [
         "sample/IMG_3396.jpg",
-        "sample/IMG_3415.jpg",
     ]
 
 # ==========================================
@@ -227,14 +226,16 @@ with col_in:
         image_name = os.path.basename(selected_sample)
         st.image(img_bytes, caption=f"サンプル画像: {image_name}", use_container_width=True)
 
-    with st.expander("📐 横幅範囲 & 深度しきい値設定", expanded=False):
-        width_range = st.slider(
-            "解析する横幅の範囲 (%)",
-            min_value=0,
-            max_value=100,
-            value=AppConfig.WIDTH_RANGE,
-            step=1,
-        )
+    # 左右幅の調節バー（アコーディオン外に直接配置）
+    width_range = st.slider(
+        "📐 解析する横幅の範囲 (%)",
+        min_value=0,
+        max_value=100,
+        value=AppConfig.WIDTH_RANGE,
+        step=1,
+    )
+
+    with st.expander("📐 深度しきい値設定", expanded=False):
         dt = st.slider(
             "深度しきい値",
             min_value=0,

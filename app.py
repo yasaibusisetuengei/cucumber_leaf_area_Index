@@ -21,8 +21,9 @@ class AppConfig:
     DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
     DEVICE = -1  # CPU強制指定
 
-    # デフォルト設定（上下は葉の検出結果から自動決定、横幅のみ調整可能）
-    WIDTH_RANGE = (10, 90)  # (左(%), 右(%))
+    # デフォルト設定
+    WIDTH_RANGE = (10, 90)   # (左(%), 右(%))
+    HEIGHT_RANGE = (0, 100)  # (上(%), 下(%))
     DEPTH_THRESH = 200
     HSV_H = (30, 90)
     HSV_S = (10, 255)
@@ -65,7 +66,7 @@ def estimate_depth(img_bytes: bytes) -> np.ndarray:
 # ==========================================
 # 3. 葉面積解析メインロジック
 # ==========================================
-def process_leaf_area(img_bytes: bytes, image_name: str, l: int, r: int, dt: int, h_range, s_range, v_range):
+def process_leaf_area(img_bytes: bytes, image_name: str, l: int, r: int, auto_y: bool, t: int, b: int, dt: int, h_range, s_range, v_range):
     pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     img = np.array(pil_img)
     base_name = os.path.splitext(os.path.basename(image_name))[0]
@@ -92,28 +93,38 @@ def process_leaf_area(img_bytes: bytes, image_name: str, l: int, r: int, dt: int
 
     # 深度マスクとカラーマスクの統合
     leaf_mask = cv2.bitwise_and(mask_c, mask_d)
-    pixel_count = int(cv2.countNonZero(leaf_mask))
 
-    # 一番上の葉と一番下の葉のY座標を自動検出
-    ys, _ = np.where(leaf_mask == 255)
-    has_leaf = len(ys) > 0
-    if has_leaf:
-        y_min = int(ys.min())
-        y_max = int(ys.max())
+    # 上下幅の決定（自動検出 or 手動調整）
+    if auto_y:
+        ys, _ = np.where(leaf_mask == 255)
+        has_target = len(ys) > 0
+        if has_target:
+            y_min = int(ys.min())
+            y_max = int(ys.max())
+            t_out = max(0, min(99, int(round(y_min / h * 100))))
+            b_out = max(t_out + 1, min(100, int(round((y_max + 1) / h * 100))))
+            y_mode_label = "自動検出"
+        else:
+            y_min, y_max = 0, h - 1
+            t_out, b_out = t, b
+            y_mode_label = "自動検出(葉なし)"
+    else:
+        y_min = int(h * t / 100)
+        y_max = max(y_min, int(h * b / 100) - 1)
+        has_target = (y_max >= y_min) and (x2 > x1)
+        t_out, b_out = int(t), int(b)
+        y_mode_label = "手動調整"
+
+    if has_target:
+        roi_mask = leaf_mask[y_min:y_max + 1, :]
+        pixel_count = int(cv2.countNonZero(roi_mask))
         eff_height = y_max - y_min + 1
         total_pixels = eff_height * (x2 - x1)
         leaf_pct = (pixel_count / total_pixels) * 100
-        y_info_text = f"上下(自動検出): {y_min}〜{y_max} px（高さ {eff_height} px）"
-    else:
-        y_min, y_max = 0, h - 1
-        total_pixels = leaf_mask.size
-        leaf_pct = 0.0
-        y_info_text = "上下(自動検出): 葉が検出されませんでした"
+        y_info_text = f"上下({y_mode_label}): {y_min}〜{y_max} px（高さ {eff_height} px / {t_out}%〜{b_out}%）"
 
-    # 解析対象範囲（x1:x2, y_min:y_max+1）内のオーバーレイ作成（葉以外の背景を青色オーバーレイ）
-    if has_leaf:
+        # 解析対象範囲（x1:x2, y_min:y_max+1）内のオーバーレイ作成
         roi_bgr = canvas[y_min:y_max + 1, x1:x2]
-        roi_mask = leaf_mask[y_min:y_max + 1, :]
         blue_bg = np.full_like(roi_bgr, AppConfig.COLORS["MASK_BLUE"])
         canvas[y_min:y_max + 1, x1:x2] = np.where(
             roi_mask[:, :, None] == 255,
@@ -127,7 +138,7 @@ def process_leaf_area(img_bytes: bytes, image_name: str, l: int, r: int, dt: int
             ),
         )
 
-        # 分母範囲外（左右の除外領域 + 上下の葉範囲外）を暗く表示して視覚的に区別
+        # 分母範囲外（左右の除外領域 + 上下の範囲外）を暗く表示
         outside_mask = np.ones((h, w), dtype=bool)
         outside_mask[y_min:y_max + 1, x1:x2] = False
         dark_bg = np.full_like(canvas, AppConfig.COLORS["OUTSIDE_DARK"])
@@ -139,6 +150,10 @@ def process_leaf_area(img_bytes: bytes, image_name: str, l: int, r: int, dt: int
         # 分母となる囲み領域の枠線を描画
         cv2.rectangle(canvas, (x1, y_min), (x2 - 1, y_max), (255, 255, 255), 2)
     else:
+        pixel_count = 0
+        total_pixels = leaf_mask.size
+        leaf_pct = 0.0
+        y_info_text = "上下(自動検出): 葉が検出されませんでした"
         dark_bg = np.full_like(canvas, AppConfig.COLORS["OUTSIDE_DARK"])
         canvas = cv2.addWeighted(
             canvas, 1 - AppConfig.COLORS["OUTSIDE_ALPHA"], dark_bg, AppConfig.COLORS["OUTSIDE_ALPHA"], 0
@@ -155,9 +170,11 @@ def process_leaf_area(img_bytes: bytes, image_name: str, l: int, r: int, dt: int
         "leaf_area_pct": round(leaf_pct, 2),
         "extracted_pixels": pixel_count,
         "total_pixels": total_pixels,
-        "roi_range": f"L:{l}%, R:{r}% / Y:{y_min}-{y_max}px(自動)",
+        "roi_range": f"L:{l}%, R:{r}% / T:{t_out}%, B:{b_out}% ({y_mode_label}, Y:{y_min}-{y_max}px)",
         "l": l,
         "r": r,
+        "t_out": t_out,
+        "b_out": b_out,
         "y_info_text": y_info_text,
         "depth_thresh": dt,
         "hsv_range": f"H:{h1}-{h2}, S:{s1}-{s2}, V:{v1}-{v2}",
@@ -171,7 +188,7 @@ def build_csv_bytes(result_data: dict) -> bytes:
     writer.writerow([
         "解析日時", "画像ファイル名", "葉面積率(%)",
         "抽出ピクセル数(px)", "囲み範囲総ピクセル数(px)",
-        "解析範囲(左右手動/上下自動)", "深度しきい値", "HSVフィルタ範囲",
+        "解析範囲", "深度しきい値", "HSVフィルタ範囲",
     ])
     writer.writerow([
         result_data["timestamp"],
@@ -186,11 +203,24 @@ def build_csv_bytes(result_data: dict) -> bytes:
     return buf.getvalue().encode("utf-8-sig")
 
 # ==========================================
-# 4. UI構築 (Streamlit Online)
+# 4. セッション状態初期化 & コールバック
+# ==========================================
+if "auto_y" not in st.session_state:
+    st.session_state["auto_y"] = True
+if "y_range_slider" not in st.session_state:
+    st.session_state["y_range_slider"] = AppConfig.HEIGHT_RANGE
+if "pending_y_range" in st.session_state:
+    st.session_state["y_range_slider"] = st.session_state.pop("pending_y_range")
+
+def on_y_slider_change():
+    st.session_state["auto_y"] = False
+
+# ==========================================
+# 5. UI構築 (Streamlit Online)
 # ==========================================
 st.title("🥒 キュウリ葉面積率算出アプリ")
 st.caption(
-    "横幅のみを手動で調整し、上下は「一番上の葉〜一番下の葉」を自動検出して囲み範囲の面積を分母に葉面積率を算出します。"
+    "横幅を調整して解析すると上下の葉位置を自動検出します。必要に応じて詳細設定から上下幅を手動で微調整できます。"
 )
 
 col_in, col_out = st.columns([2, 3], gap="large")
@@ -235,7 +265,23 @@ with col_in:
         step=1,
     )
 
-    with st.expander("📐 深度しきい値設定", expanded=False):
+    # 合体した1つのアコーディオン：上下幅・深度しきい値・HSVカラーフィルタ
+    with st.expander("⚙️ 詳細設定（上下幅・深度・HSV）", expanded=False):
+        st.markdown("**📐 上下幅設定**")
+        auto_y = st.checkbox(
+            "上下幅を自動検出する（葉の上下端に合わせる）",
+            key="auto_y",
+        )
+        y_range = st.slider(
+            "上下幅の範囲 (%)",
+            min_value=0,
+            max_value=100,
+            step=1,
+            key="y_range_slider",
+            on_change=on_y_slider_change,
+        )
+
+        st.markdown("**📏 深度しきい値設定**")
         dt = st.slider(
             "深度しきい値",
             min_value=0,
@@ -244,7 +290,7 @@ with col_in:
             step=1,
         )
 
-    with st.expander("🎨 HSVカラーフィルタ設定", expanded=False):
+        st.markdown("**🎨 HSVカラーフィルタ設定**")
         h_range = st.slider("H (色相) 範囲", 0, 179, AppConfig.HSV_H, step=1)
         s_range = st.slider("S (彩度) 範囲", 0, 255, AppConfig.HSV_S, step=1)
         v_range = st.slider("V (明度) 範囲", 0, 255, AppConfig.HSV_V, step=1)
@@ -258,6 +304,9 @@ if run_btn:
     elif width_range[0] >= width_range[1]:
         st.session_state["leaf_error"] = "横幅の左端と右端は異なる値（左 < 右）に設定してください。"
         st.session_state.pop("leaf_result", None)
+    elif not auto_y and y_range[0] >= y_range[1]:
+        st.session_state["leaf_error"] = "上下幅の上端と下端は異なる値（上 < 下）に設定してください。"
+        st.session_state.pop("leaf_result", None)
     else:
         st.session_state.pop("leaf_error", None)
         res_img, result_data = process_leaf_area(
@@ -265,6 +314,9 @@ if run_btn:
             image_name=image_name,
             l=width_range[0],
             r=width_range[1],
+            auto_y=auto_y,
+            t=y_range[0],
+            b=y_range[1],
             dt=dt,
             h_range=h_range,
             s_range=s_range,
@@ -274,6 +326,10 @@ if run_btn:
             "res_img": res_img,
             "data": result_data,
         }
+        # 自動検出した上下幅をスライダーに反映して再描画
+        if auto_y and result_data["extracted_pixels"] > 0:
+            st.session_state["pending_y_range"] = (result_data["t_out"], result_data["b_out"])
+            st.rerun()
 
 with col_out:
     if "leaf_error" in st.session_state:
